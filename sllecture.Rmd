@@ -1,7 +1,7 @@
 ---
 title: "Super Learning"
 author: "David Benkeser"
-date: "April 19, 2016"
+date: "April 20, 2016"
 output: html_document
 ---
 
@@ -264,7 +264,8 @@ sl5 <- SuperLearner(
   Y = chspred$mi,
   X = chspred[,-ncol(chspred)], 
   SL.library=c("SL.glm","SL.mean"),
-  method = "method.AUC"
+  method = "method.AUC",
+  family=binomial()
   )
 
 sl5
@@ -500,10 +501,23 @@ SL.caret1 <- function (Y, X, newX, family, obsWeights, method = "rf", tuneLength
     metric <- "Accuracy"
     Y.f <- as.factor(Y)
     levels(Y.f) <- c("A0", "A1")
-    fit.train <- caret::train(x = X, y = Y.f, weights = obsWeights,
+    if(method=="gbm"){
+      suppressWarnings(
+        # pass verbose==FALSE directly to train (verboseIter doesn't 
+        # suppress output)
+      fit.train <- caret::train(x = X, y = Y.f, weights = obsWeights,
                               metric = metric, method = method, 
                               tuneLength = tuneLength, 
-                              trControl = trControl)
+                              trControl = trControl, verbose = FALSE)
+      )
+    }else{
+      suppressWarnings(
+      fit.train <- caret::train(x = X, y = Y, weights = obsWeights, 
+                                metric = metric, method = method, 
+                                tuneLength = tuneLength, 
+                                trControl = trControl)
+      )
+    }
     pred <- predict(fit.train, newdata = newX, type = "prob")[,2]
   }
   fit <- list(object = fit.train)
@@ -513,25 +527,26 @@ SL.caret1 <- function (Y, X, newX, family, obsWeights, method = "rf", tuneLength
 }
 ```
 
-As a brief demonstration, we illustrate the implementation of a Super Learner that uses three gradient boosted machine algorithms: `SL.gbm` uses fixed tuning parameters (`gbm.trees=10000` and `interaction.depth=2`); `SL.gbm.caret1` uses twenty-fold cross validation (the default) to select these tuning parameters from a grid of eight possible values; `SL.gbm.caret2` uses ten-fold cross validation to select tuning parameters also from a grid of eight possible values. First we must define `SL.gbm.caret1` and `SL.gbm.caret2`:
+As a brief demonstration, we illustrate the implementation of a Super Learner that uses three gradient boosted machine algorithms: `SL.gbm` uses fixed tuning parameters (`gbm.trees=10000` and `interaction.depth=2`); `SL.gbm.caret1` uses twenty-fold cross validation (the default) to select these tuning parameters from a grid of three possible values; `SL.gbm.caret2` uses ten-fold cross validation to select tuning parameters also from a grid of eight possible values. First we must define `SL.gbm.caret1` and `SL.gbm.caret2`:
 ```{r gbmcaret2, message=FALSE}
-SL.gbm.caret1 <- function(...,method="gbm",tuneLength=8){
+SL.gbm.caret1 <- function(...,method="gbm",tuneLength=3){
   SL.caret1(...,method=method,tuneLength=tuneLength)
 }
 
-SL.gbm.caret2 <- function(...,method="gbm",tuneLength=8, trControl=trainControl(method="cv",number=10,verboseIter=FALSE)){
+SL.gbm.caret2 <- function(...,method="gbm",tuneLength=3, trControl=trainControl(method="cv",number=10,verboseIter=FALSE)){
   SL.caret1(...,method=method,tuneLength=tuneLength,trControl=trControl)
 }
 ```
 
 We can now implement the Super Learner. Note that the run time on this Super Learner will be considerably longer than previous runs due to the additional layers of cross validation.
 ```{r gbm.sl, message=FALSE, warnings=FALSE, cache=TRUE}
-set.seed(1234)
+set.seed(123)
 
-# fit super learner using three GBMs
+# fit super learner using three GBMs -- only use the first 150 rows 
+# for the sake of expediency
 gbm.sl <- SuperLearner(
-  Y = statins$death, 
-  X = statins[,-ncol(statins)],
+  Y = statins$death[1:150], 
+  X = statins[1:150,-ncol(statins)],
   family = binomial(),
   SL.library = c("SL.gbm","SL.gbm.caret1","SL.gbm.caret2")
 )
