@@ -7,23 +7,31 @@ output: html_document
 
 ## Introduction
 
-In this demonstration, we will illustrate the basic functionality of the `SuperLearner` package. Using simulated data, we illustrate: (1) basic functionality of the package; (2) how to generate custom algorithms; (3) examples of Super Learning for the three examples covered in class; and (4)  how the performance of the Super Learner itself can be evaluated using cross-validation.
+In this demonstration, we will illustrate the basic functionality of the `SuperLearner` package. 
 
 ## Installing the SuperLearner package
 You can execute the following commands to install the packages needed to complete this demo.
 
-```{r install pacakages, message=FALSE}
-# install all the necessary pacakges to execute this demo
-install.packages(c("SuperLearner","gam","caret","randomForest","arm","RCurl"))
+```{r installpack, message=FALSE}
+# if needed, install all the necessary pacakges to execute this demo
+# install.packages(c("SuperLearner","gam","caret","randomForest","arm","RCurl","MASS","tmle","ggplot2","gbm"))
 
 # load the packages
-library(c("SuperLearner","gam","caret","randomForest","arm","RCurl"))
+require(SuperLearner)
+require(gam)
+require(caret)
+require(randomForest)
+require(RCurl)
+require(MASS)
+require(tmle)
+require(ggplot2)
+require(gbm)
 ```
 
 ## Loading data from GitHub
 I have made three data sets available on GitHub that will be used in this demo. These can be read directly from GitHub using the following commands:
 
-```{r install pacakages, message=FALSE}
+```{r loaddat, message=FALSE}
 # prediction data set
 chspred <- read.csv(text = getURL("https://raw.githubusercontent.com/benkeser/sllecture/master/chspred.csv"), header = TRUE)
 
@@ -35,26 +43,59 @@ hiv <- read.csv(text = getURL("https://raw.githubusercontent.com/benkeser/sllect
 ```
 
 ## Super Learner with a simple library
-We begin by illustrating the "default" functionality of the `SuperLearner` function. Using the `chspred` data, we are interested in predicting myocardial infarcation (`mi`) using the available covariate data. We will consider only a simple library of algorithms: GLM with log-link and Gamma family, GLM with identity-link and Gamma family, and the algorithm proposed by Manning (2001) to adaptively select a GLM. Each GLM only includes a main effects term for each of the covariates. These three algorithms are implemented in the functions `SL.gammaLogGLM`, `SL.gammaIdentityGLM`, and `SL.manningGLM`. Later, we will take a look at how these algorithms are constructed. 
+We begin by illustrating the "default" functionality of the `SuperLearner` function. Using the `chspred` data, we are interested in predicting myocardial infarcation (`mi`) using the available covariate data. Let's take a quick peek at the data to see what variables we have:
+```{r chspredpeek}
+head(chspred, 3)
+```
 
-```{r sl1, message=FALSE}
-# load the Super Learner package
-require(SuperLearner)
+For the sake of computational expediency, we will initially consider only a simple library of algorithms: a main effects GLM and an unadjusted (i.e., intercept) model. Later, we will look at how these algorithms are constructed for useage with `SuperLearner`
 
+```{r sl1, message=FALSE, cache=TRUE}
 # because cross-validation is used, we need to set to the seed to ensure reproducibility
 set.seed(1234)
 
 # execute the call to SuperLearner
 sl1 <- SuperLearner(
-  Y = dat$totalcost, # Y is the outcome variable
-  X = dat[,c("female","sofa","race","trt")], # X is a dataframe of predictor variables
-  SL.library = c("SL.gammaLogGLM","SL.gammaIdentityGLM","SL.manningGLM") # this is our library specified as a vector of functions
+  # Y is the outcome variable
+  Y = chspred$mi,
+  # X is a dataframe of predictor variables, in this case
+  # everything in chspred except for mi
+  X = chspred[,-ncol(chspred)], 
+  # newX will be discussed later, for now leave as NULL (default)
+  newX = NULL,
+  # family will be discussed in more detail when we see how wrappers
+  # are written, for now set to binomial() for 0/1 outcome
+  family = binomial(), 
+  # SL.library (for now) is specified as a vector of names of functions
+  # that implement the desired algorithms. SL.glm and SL.mean
+  # are included in the Super Learner package
+  SL.library = c("SL.glm","SL.mean"),
+  # method specifies how the ensembling is done, for now we will use
+  # the \sum_{k=1}^K \alpha_k f_{k,n} method by using the deafult
+  # option for method (method.NNLS)
+  method = "method.NNLS",
+  # id specifies a unique subject identifier so that whole subjects 
+  # are sampled in CV, not just rows of data. chspred only has one row 
+  # per subject, so OK to leave as NULL (default)
+  id = NULL, 
+  # verbose controls the printing of messages of SuperLearner's progress.
+  # We'll leave as FALSE (default) for now
+  verbose = FALSE, 
+  # control contains options related to logistic ensemble (trimLogit) 
+  # and whether to save the fit library to look at individual 
+  # algorithms later. We will leave as default
+  control = list(saveFitLibrary = TRUE, trimLogit = 0.001),
+  # cvControl specifies parameters related to cross validation. Of note
+  # the default is for V=10-fold cross validation. See ?SuperLearner
+  # for more details
+  cvControl = list(V = 10L, stratifyCV = FALSE, shuffle = TRUE, 
+                   validRows = NULL)
 )
 
 sl1
 ```
 
-By default `SuperLearner` will use ten-fold cross validation and mean squared-error as the loss function. From the output we see that the algorithm `r names(which(sl1$cvRisk==min(sl1$cvRisk)))` had the lowest cross-validated risk and is thus the discrete Super Learner. In fact, the best weighted combination of these three algorithms was judged to give all the weight to the `SL.manningGLM` algorithm and no weight to the other two algorithms. We will discuss why the name of each algorithm has been augmented with the suffix `_All` when we illustrate variable screening functions later in the document. 
+From the output we see that `r names(which(sl1$cvRisk==min(sl1$cvRisk)))` had the lowest cross-validated risk and is thus the Discrete Super Learner. We will discuss why the name of each algorithm has been augmented with the suffix `_All` when we illustrate variable screening functions later in the document. 
 
 Predictions from the discrete and continuous Super Learner on the observed data can now be obtained as follows:
 ```{r predsl1, message=FALSE, cache=TRUE, warning=FALSE}
@@ -73,8 +114,8 @@ dslPred <- slPred$library.predict[,which(sl1$cvRisk==min(sl1$cvRisk))]
 
 We can also obtain predictions on a new observation: 
 ```{r slPredictNew, message=FALSE}
-# generate random data for a new observation
-newObs <- data.frame(female=1, sofa=8, race=0, trt=1)
+# generate a new observation set to the mean of each variable
+newObs <- data.frame(t(colMeans(chspred[,-ncol(chspred)])))
 
 # all predictions on newObs
 slPredNew <- predict(sl1,newdata=newObs)
@@ -86,89 +127,45 @@ cslPredNew <- slPredNew$pred
 dslPredNew <- slPredNew$library.predict[,which(sl1$cvRisk==min(sl1$cvRisk))]
 ```
 
-We note that if one wishes to access the fitted object for any of the component algorithms (fit using all the data), this can be accessed through the `fitLibrary` component of the `SuperLearner` object. For example, to access the `glm` object from the `SL.gammaLogGLM` algorithm, we can use:
+If one wishes to access the fitted object for any of the component algorithms (applied to all the data), this can be accessed through the `fitLibrary` component of the `SuperLearner` object. For example, to access the `glm` object from the `SL.glm` algorithm, we can use:
 ```{r fitlib}
 # obtain gamma GLM with log-link fit
-glmObject <- sl1$fitLibrary$SL.gammaLogGLM_All$object
+glmObject <- sl1$fitLibrary$SL.glm$object
 
 # summarize the fit
 summary(glmObject)
 ```
 
-## Evaluating the Super Learner
-The `SuperLearner` package comes with an additional function to objectively evaluate the performance of the SuperLearner predictions relative to those from its component methods. This is achieved by adding an additional outer layer of V-fold cross-validation to the procedure. That is the data is split into, for example twenty equally sized pieces and each algorithm is trained on nine-tenths of the data -- including the Super Learner, which itself uses 10-fold cross-validation -- and evaluated on the remaining piece. Each piece of data serves as the evaluation set once and the cross-validated risk of the Super Learner and each component algorithm is computed. 
-
-Continuing our example from the previous section using a simple library, we can use the `CV.SuperLearer` function:
-```{r cvSuperLearner, message=FALSE, cache=TRUE, warning=FALSE}
-# set seed to ensure reproducibility
-set.seed(1234)
-
-# fit cross-validated super learner
-cvsl1 <- CV.SuperLearner(
-  Y=dat$totalcost, 
-  X = dat[,c("female","sofa","race","trt")],
-  SL.library = c("SL.gammaLogGLM","SL.gammaIdentityGLM","SL.manningGLM")
-)
-```
-
-The object itself is not that informative:
-```{r cvObj}
-cvsl1
-```
-
-However, there is a nice plotting function to display the results:
-```{r cvPlot, message=FALSE}
-# load ggplot2
-require(ggplot2)
-# plot cross-validated risk
-plot(cvsl1)
-```
-
-The plot shows the ordered cross-validated risk estimates and 95\% confidence intervals about these estimates for each of the candidate algorithms, in addition to the discrete and continuous Super Learner. In this case, we see that the Manning (2001) algorithm has the lowest cross-validated risk, followed closely by the two Super Learners. However, the confidence intervals are wide and it is difficult at these small sample sizes to determine which method performs best. 
-
-## Writing prediction algorithms for Super Learner
-We now discuss how to supply new prediction algorithms to the `SuperLearner` function. First, it is useful to check the algorithms that are included in the `SuperLearner` by default: 
+## Writing algorithms for Super Learner
+We now discuss how to supply new algorithms to the `SuperLearner` function. First, it is useful to check the algorithms that are included in the `SuperLearner` by default: 
 ```{r listwrap}
 listWrappers()
 ```
-We can also check what is included in the `healthcost` software by default:
-```{r listwraphc}
-hc.listWrappers()
-```
 
-Note that both "prediction" and "screening"" algorithms are shown. We focus first on prediction algorithms. We can view the contents of the `SL.glm` algorithm:
+Note that both "prediction" and "screening"" algorithms are shown. We focus first on prediction algorithms; screening algorithms are discussed in the next section. Let's look at the guts of the `SL.glm` algorithm:
 ```{r slglm}
 SL.glm
 ```
-We note that this function takes as input: `Y`, `X`, `newX`, `family`, `obsWeights`, and other arguments via `...`. For the analysis of health care cost data the `family` option in the call to `SuperLearner` should be set to `gaussian()` (which is the default), so that `Y` is treated as a continuous variable. This option has no bearing on the assumptions made by the Super Learner (i.e., we are not assuming that health costs are normally distributed), but rather, this option is simply passed through to each of the prediction algorithms. This allows one to, for example use a single prediction function when the outcome is both binary and continuous. 
-
-The output of the prediction algorithm is a list with components `pred`, a vector of predictions computed on the `newX` object, and `fit`, which contains anything that is (1) used for predicting new values later; or (2) desired for later access via the `fitLibrary` component of the `SuperLearner` object. Because this `fit` object may be used for prediction later, it is important to specify its class so that an S3 predict method can be used on the object later. Note that such a method is already included for `SL.glm`: 
+Note that `SL.glm` is a function that takes as input: `Y`, `X`, `newX`, `family`, `obsWeights`, and other arguments via `...`. Note that the `family` option allows one to use a single prediction function when the outcome is both binary and continuous. In this case, `SL.glm` with `family=gaussian()` will call `glm` with `family=gaussian()` (linear regression); with `family=binomial()` it calls `glm` with `family=binomial()` (logistic regression). The output of the function is a list with components `pred`, a vector of predictions computed on the `newX` object (not `X`! source of many errors in my life...), and `fit`, which contains anything that is (1) required for predicting new values later; or (2) desired for later access via the `fitLibrary` component of the `SuperLearner` object. Because this `fit` object may be used for prediction later, it is important to specify its class so that an S3 predict method can be used on the object later. Note that such a method is already included for `SL.glm`: 
 ```{r predslglm}
 predict.SL.glm
 ```
 
 This input/output structure is all that is needed to define a new prediction algorithm for `SuperLearner`. 
 
-As an illustration, we could write a new algorithm specifying a new `glm` algorithm that uses the Gamma error distribution, log link, and a natural spline of degree `d` for any variable with more than `cts.num` unique values, where `d` and `cts.num` are some values chosen by the user: 
+As an illustration, we could write a new algorithm specifying a new `glm` algorithm that uses the Poisson error distribution and log link (default of `family = poisson()`): 
 ```{r newglm, message=FALSE}
 require(splines)
 
-SL.gammaLogGLM.ns <- function(Y, X, newX, family, obsWeights,
-                              cts.num=4, d=3, ...){
-  # check which variables in X have at least cts.num unique values
-  cts.x <- apply(X, 2, function(x) (length(unique(x)) > cts.num))
+SL.poisglm <- function(Y, X, newX, family, obsWeights, ...){
+  # Poisson regression can be used regardless of whether Y is 
+  # continuous or binary, so we will not specify anything related to 
+  # family
   
-  # fit glm with natural spline of degree d for variables 
-  # with at least cts.num unique values, and main effects 
-  # terms for all other variables
-  fit.glm <- glm(as.formula(paste("Y~", paste(paste0("ns(", 
-            colnames(X[,cts.x,drop = FALSE]), ",df=", d, 
-            ")"), collapse = "+"), "+", paste(colnames(X[, 
-            !cts.x, drop = FALSE]), collapse = "+"))),
-            data=X, family=Gamma(link='log'), 
-            start=c(mean(log(Y)), rep(0, ncol(X)+ (d-1)*sum(cts.x))))
+  # fit glm with family=poisson()
+  fit.glm <- glm(Y ~ .,data=X, family=poisson())
   
-  # get predictions
+  # get predictions on newX object
   pred <- predict(fit.glm, newdata=newX, type="response")
   
   # save the fit object
@@ -179,27 +176,23 @@ SL.gammaLogGLM.ns <- function(Y, X, newX, family, obsWeights,
   # i.e. no need to write a new predict function
   class(fit) <- "SL.glm"
   
+  # out must be list with named objects pred (predictions on newX)
+  # and fit (anything needed to get predictions later)
   out <- list(pred=pred, fit=fit)
   return(out)
 }
 ```
-We have now defined a new algorithm for use in the SuperLearner. The algorithm first searches through the predictor variables and identifies those with more than `cts.num` unique values. A GLM is then fit using main effects terms for variables with fewer than `cts.num` unique values, and natural splines of degree `d` for variables with more than `cts.num` unique values. 
-
-Note that it is trivial to include existing algorithms with different tuning parameter values. For example, if we wanted to include the above algorithm but using a natrual spline of degree two, we could simply define: 
-```{r newglm2}
-SL.gammaLogGLM.ns2 <- function(...,d=2){
-  SL.gammaLogGLM.ns(...,d=d)
-}
-```
+We have now defined a new algorithm for use in the SuperLearner. 
 
 These new algorithms can now be added to the library we used previously: 
 ```{r newsl, cache=TRUE, warning=FALSE}
-set.seed(12345)
+set.seed(1234)
 
 sl2 <- SuperLearner(
-  Y = dat$totalcost,
-  X = dat[,c("female","sofa","race","trt")], 
-  SL.library = c("SL.gammaLogGLM","SL.gammaIdentityGLM","SL.manningGLM","SL.gammaLogGLM.ns","SL.gammaLogGLM.ns2"))
+  Y = chspred$mi,
+  X = chspred[,-ncol(chspred)],
+  SL.library = c("SL.glm","SL.mean","SL.poisglm")
+  )
 
 sl2
 ```
@@ -210,127 +203,338 @@ slPredNew2 <- predict(sl2,newdata=newObs)
 slPredNew2
 ```
 
-
-## Writing screening algorithms for the Super Learner
-We now discuss how screening algorithms can be utilized to create larger Super Learner libraries. As the name suggests, these are algorithms that define a screening step prior to the execution of the prediction algorithm. The `SuperLearner` function will apply this screening step in each of the V folds. This combination of screening algorithm and prediction algorithm thus defines a new algorithm. We can look at how screening algorithms are constructed for use with the `SuperLearner` package:
+## Screening algorithms for the Super Learner
+We now discuss how screening algorithms can be utilized to create Super Learner libraries. As the name suggests, these are algorithms that define a screening step prior to the execution of the prediction algorithm. The `SuperLearner` function will apply this screening step in each of the V folds. The combination of screening algorithm and prediction algorithm defines a new algorithm. We can look at how screening algorithms are constructed for use with the `SuperLearner` package:
 ```{r screenalg}
 write.screen.template()
 ```
 
 Screening algorithms take the same input as prediction algorithms, but output a logical vector with `TRUE` indicating that a column of `X` should be used in the prediction step. To illustrate why these functions are useful, in our running example, consider the possibility of an interaction between treatment and SOFA score. If we are unsure of the existence of this interaction, we may wish to include algorithms that both do and do not account for this interaction. To construct a new library that includes algorithms both with and without interactions, we can make use of screening algorithms. 
 
-Let's first set up a new data frame for use with `SuperLearner` that includes a column for the cross product of treatment and SOFA:
-```{r newdata}
-myX <- data.frame(female=dat$female,
-                  sofa=dat$sofa,
-                  race=dat$race,
-                  trt=dat$trt,
-                  sofaInt=dat$trt * dat$sofa)
-```
-
-Now let's write a screening algorithm that removes the interaction:
+Let's write a screening algorithm that only includes demographic variables:
 ```{r noint}
-noInt <- function(X,...){
-  return(c(TRUE,TRUE,TRUE,TRUE,FALSE))
+demographics <- function(X,...){
+  returnCols <- rep(FALSE, ncol(X))
+  returnCols[names(X) %in% c("age","gend","race","hsed")] <- TRUE
+  return(returnCols)
 }
 ```
 
-Now we can fit the SuperLearner using the three original algorithms each with and without the interaction. The call to `SuperLearner` is nearly identical; however, we now specify `SL.library` as a list, where each component is a vector of the form `c(predictionAlgorithm,screeningAlgorithm)`. To include the interaction, we specify the `All` screening algorithm that is included in the `SuperLearner` package.
+Now we can fit the SuperLearner using the two GLMs both with all variables and only demographic variables. The call to `SuperLearner` is nearly identical; however, we now specify `SL.library` as a list, where each component is a vector of the form `c(predictionAlgorithm,screeningAlgorithm)`. To include all the covariates, we specify the `All` screening algorithm that is included in the `SuperLearner` package.
 ```{r intSL, cache=TRUE, warning=FALSE}
 set.seed(1234) 
 
 # Fit the Super Learner
 sl3 <- SuperLearner(
-  Y=dat$totalcost, 
-  X=myX,
-  SL.library=list(c("SL.gammaLogGLM","All"),c("SL.gammaLogGLM","noInt"),
-                  c("SL.gammaIdentityGLM","All"),c("SL.gammaIdentityGLM","noInt"),
-                  c("SL.manningGLM","All"),c("SL.manningGLM","noInt"))
+  Y = chspred$mi,
+  X = chspred[,-ncol(chspred)],
+  SL.library=list(c("SL.glm","All"),c("SL.glm","denographics"),
+                  c("SL.mean","All"), # not adjusted, so doesn't matter
+                  c("SL.poisglm","All"),c("SL.poisglm","denographics"))
   )
 
 sl3
 ```
 
-Note that the output for `sl3` lists six algorithms: the three original algorithms each with the interaction (`_All`) and without (`_noInt`). Note that this explains why the output for `sl1` contained the "_All" addendum -- by default `SuperLearner` uses all the `All` screening function to pass through all variables in `X` to the prediction algorithms. 
+Note that the output for `sl3` lists five algorithms: the three original algorithms each with the interaction (`_All`) and without (`_noInt`). Note that this explains why the output for `sl1` contained the "_All" addendum -- by default `SuperLearner` uses all the `All` screening function to pass through all variables in `X` to the prediction algorithms. 
 
-This flexibility in combining screening and prediction algorithms to generate new algorithms allows one to easily implement a library containing a large number of candidate algorithms.
+This flexibility in combining screening and prediction algorithms to generate new algorithms allows one to easily implement a library containing a large number of candidate algorithms. Check out `listWrappers()` to see other screening functions that are useful for more high dimensional settings. 
+
+## Using different loss/ensemble functions
+So far, we have been focusing on using mean-squared error loss, by virtue of using the default `method=method.NNLS`. Because our outcome is binary, we may instead prefer the negative log-likelihood loss function instead. We can easily change our original call to `SuperLearner` to this loss function: 
+
+```{r nnloglSL, cache=TRUE, warning=FALSE}
+set.seed(1234)
+
+sl4 <- SuperLearner(
+  Y = chspred$mi,
+  X = chspred[,-ncol(chspred)], 
+  SL.library=c("SL.glm","SL.mean"),
+  method = "method.NNloglik"
+  )
+
+sl4
+```
+
+We may wish instead to maximize AUC (equivalent to minimizing rank loss); for this, we can specify `method=method.AUC`:
+```{r aucSL, cache=TRUE, warning=FALSE}
+set.seed(1234)
+
+sl5 <- SuperLearner(
+  Y = chspred$mi,
+  X = chspred[,-ncol(chspred)], 
+  SL.library=c("SL.glm","SL.mean"),
+  method = "method.AUC"
+  )
+
+sl5
+```
+
+Or we can even write our own method. The package contains a template for doing so. It requires a function that returns a list with three components: (1) `require` lists the packages needed to execute the functions; (2) `computeCoef` is a function that takes a specific input and returns a cross validated risk estimate and vector of weight coefficients corresponding to the $K$ algorithms in the library; (3) `computePred` a function that computes the ensemble prediction. 
+```{r methtemp, warning=FALSE}
+method.template
+```
+
+## Statin Analysis -- Super Learner + Efficient Estimation
+We now illustrate an analysis of the statin data that combines Super Learning-derived estimates with one-step estimation and TMLE. As you learned in class, the canonical gradient of the parameter $E_0\bigl\{E_0(Y | A=1, W) - E_0(Y | A=0, W)\bigr\}$ at $(Q,g)$ in a nonparametric model is given by $$ 
+D^*(Q,g)(o) = \frac{2a - 1}{g^a_0(w)} (y - \bar{Q}^a_0(w)) + \bar{Q}^1_0(w) - \bar{Q}^0_0(w) - \psi_0 \ . 
+$$
+The one-step estimator is defined as $$
+\psi_n^+ := \Psi(Q_n) + P_n D^*(Q_n,g_n) \ . 
+$$
+We will now use the statin data to illustrate how to construct this estimator using Super Learner-based estimates of the nuisance parameters. 
+
+Let's first take a peek at the `statin` data to familiarize ourselves with what variables are there 
+```{r lookatstatins, warning=FALSE}
+head(statins, 3)
+```
+
+First we need to estimate both the outcome regression and the propensity regression using Super Learner. We start with the propensity:
+```{r propensity, warning=FALSE}
+# estimate g_0^1
+sl.g1 <- SuperLearner(
+  # our outcome is now the statin variable
+  Y = statins$statin, 
+  # our predictors are all variables except for death and statins
+  X = statins[,-c(1,ncol(statins))],
+  # outcome is binary, so let's use family = binomial()
+  family = binomial(),
+  # and nnloglik metho
+  method=method.NNloglik,
+  # simple library for computational efficiency
+  SL.library = c("SL.glm","SL.mean")
+)
+
+# get predicted probability that statin = 1
+g1n <- sl.g1$SL.pred
+
+# the predicted probability that statin = 0 is 1-g1n
+g0n <- 1 - g1n
+
+# get predicted probability that statin = observed value
+gan <- ifelse(statins$statin==0, g0n[statins$statin==0], g1n[statins$statin==1])
+```
+
+We can now estimate the outcome regression and return predictions setting `statin` equal to zero and one:
+```{r outcome, cache=TRUE, warning=FALSE}
+set.seed(1234)
+
+# estimate \bar{Q}_0
+sl.Q <- SuperLearner(
+  # our outcome is death
+  Y = statins$death, 
+  # our predictors are all variables other than death
+  X = statins[,-ncol(statins)],
+  # outcome is binary, so let's use family = binomial()
+  family = binomial(),
+  # and nnloglik metho
+  method=method.NNloglik,
+  # simple library for computational efficiency
+  SL.library = c("SL.glm","SL.mean")
+)
+
+# set up a data frame where everyone has statin=1
+statins1 <- statins[,-ncol(statins)]
+statins1$statin <- 1
+
+# get \bar{Q}_n^1
+Q1n <- predict(sl.Q, newdata=statins1)$pred
+
+# set up a data frame where everyone has statin=0
+statins0 <- statins[,-ncol(statins)]
+statins0$statin <- 0
+
+# get \bar{Q}_n^0
+Q0n <- predict(sl.Q, newdata=statins0)$pred
+
+# get \bar{Q}_n^a
+Qan <- ifelse(statins$statin==0, Q0n[statins$statin==0], Q1n[statins$statin==1])
+```
+
+We now have all the ingredients to construct the one-step estimator:
+```{r onestep, warning=FALSE}
+# naive plug-in estimator
+psi.naive <- mean(Q1n - Q0n)
+psi.naive
+
+# bias correction (P_n applied to canonical gradient)
+PnDQngn <- mean((2*statins$statin - 1)/gan * (statins$death - Qan) + (Q1n - Q0n) - psi.naive)
+
+# one step estimator
+psi.os <- psi.naive + PnDQngn
+psi.os
+```
+
+We can also estimate $\psi_0$ using TMLE combined with Super Learning. The `tmle` package is already integrated with `SuperLearner`, so we do not have to do as much work ourselves:
+```{r tmle, warning=FALSE}
+set.seed(1234)
+
+tmleFit <- tmle(
+  Y = statins$death,
+  A = statins$statin,
+  W = statins[,-c(1,ncol(statins))],
+  Q.SL.library = c("SL.glm","SL.mean"),
+  g.SL.library = c("SL.glm","SL.mean")
+)
+
+tmleFit
+```
+
+
+## Evaluating the Super Learner
+The `SuperLearner` package comes with an additional function to objectively evaluate the performance of the SuperLearner predictions relative to those from its component methods. This is achieved by adding an additional outer layer of V-fold cross-validation to the procedure. That is the data is split into, for example twenty equally sized pieces and each algorithm is trained on nine-tenths of the data -- including the Super Learner, which itself uses 10-fold cross-validation -- and evaluated on the remaining piece. Each piece of data serves as the evaluation set once and the cross-validated risk of the Super Learner and each component algorithm is computed. 
+
+We can use the `CV.SuperLearer` function to evaluate our over-simplified library:
+```{r cvSuperLearner, message=FALSE, cache=TRUE, warning=FALSE}
+set.seed(1234)
+
+# fit cross-validated super learner
+cvsl1 <- CV.SuperLearner(
+  Y = statins$death, 
+  X = statins[,-ncol(statins)],
+  # V specifies the number of outer CV layers used to evalute
+  # the Super Learner (which by default uses 10-fold CV)
+  V = 20,
+  family = binomial(),
+  method="method.NNLS",
+  SL.library = c("SL.glm","SL.mean")
+)
+```
+
+The object itself is not all that informative:
+```{r cvObj}
+cvsl1
+```
+
+However, there is a nice plotting function to display the results:
+```{r cvPlot, message=FALSE}
+# plot cross-validated risk
+plot(cvsl1)
+```
+
+The plot shows the ordered cross-validated risk estimates and 95\% confidence intervals about these estimates for each of the candidate algorithms, in addition to the discrete and continuous Super Learner. 
 
 ## Using Super Learner to tune a single method
-A corollary of the above is that the Super Learner software can easily be used to implement a single method with many different tuning parameter values. As an example, consider the method developed by Wang (2009) that uses quantile regression and a transformation to estimate the conditional mean health care cost. The method requires three tuning parameters: the number of quantiles to estimate `m` and two parameters that determine the amount of trimming in the transformation of the quantiles to the condtional mean, `b` and `c`. 
+The Super Learner software can easily be used to implement a single method with many different tuning parameter values. As an example, consider using Random Forests to estimate the outcome regression in the statin example. The method requires two tuning parameters: the number of trees to build `ntree`, the size of the trees `nodesize`, and the number of randomly sampled covariates for each tree `mtry`.
 
-We can easily define a new algorithm that uses a single set of values for these parameters, just as we did for `SL.gammaLogGLM.ns2` above: 
-```{r wangzhou1, message=FALSE}
-SL.wangZhou_m100_b0.01_c0.1 <- function(...,m=100,b=0.01,c=0.1){
-  SL.wangZhou(...,m=m,b=b,c=c)
+We can easily define a new algorithm that uses a single set of values for these parameters: 
+```{r rf1, message=FALSE}
+SL.randomForest_m5_nt1000_ns3 <- function(...,mtry=5,ntree=1000,nodesize=3){
+  SL.randomForest(...,mtry=mtry,ntree=ntree,nodesize=nodesize)
 }
 ```
 
-We can also easily use a loop to define functions over a grid of tuning parameter values:
-```{r wangzhou2, message=FALSE}
-tuneGrid <-  expand.grid(m = c(50, 100), b=c(0.01, 0.1), c=c(0.1, 0.5))
+We can also use a loop to define functions over a grid of tuning parameter values:
+```{r rf2, message=FALSE}
+tuneGrid <-  expand.grid(mtry = c(3,5), ntree=c(500,1000), nodesize=c(1,3))
 
 for(i in seq(nrow(tuneGrid))) { 
-  eval(parse(text = paste0("SL.wangZhou_m",tuneGrid[i,1],"_b",tuneGrid[i,2],"_c",tuneGrid[i,3], 
-                      "<- function(..., m = ", tuneGrid[i, 1], ", b = ", tuneGrid[i, 2], 
-                      ", c = ", tuneGrid[i,3],") { SL.wangZhou(..., m = m, b = b, c = c)}")))
+  eval(parse(text = paste0("SL.randomForest_m",tuneGrid[i,1],"_nt",tuneGrid[i,2],"_ns",tuneGrid[i,3], 
+                      "<- function(..., mtry = ", tuneGrid[i, 1], ", ntree = ", tuneGrid[i, 2], 
+                      ", nodesize = ", tuneGrid[i,3],") { SL.randomForest(..., mtry = mtry, ntree = ntree, nodesize=nodesize)}")))
   }
 ```
 
-We have now created eight new prediction algorithms with each combination of tuning parameters specified in `tuneGrid`. For example, we can look at the algorithm that uses `m=50`, `b=0.01`, and `c=0.1`: 
-```{r exwangzhou}
-SL.wangZhou_m50_b0.1_c0.1
+We have now created eight new prediction algorithms with each combination of tuning parameters specified in `tuneGrid`. For example, we can look at the algorithm that uses `mtry=3`, `ntree=500`, and `nodesize=1`: 
+```{r exrf}
+SL.randomForest_m3_nt500_ns1
 ```
 We can collect all of these algorithms by searching through `R` objects with a similar name:
 ```{r allwangzhou}
 # get vector of all objects in R
 allObjects <- ls()
-# search names of objects for 'SL.wangZhou_m'
-wangZhouObjects <- grep("SL.wangZhou_m",allObjects)
-# get only objects with 'SL.wangZhou_m' in their name
-allWangZhou <- allObjects[wangZhouObjects]
-allWangZhou
+# search names of objects for 'SL.randomForest_m'
+myRfObjects <- grep("SL.randomForest_m",allObjects)
+# get only objects with 'SL.randomForest_m' in their name
+allRf <- allObjects[myRfObjects]
+allRf
 ```
 
 We can now use Super Learner to evaluate the performance of the Wang (2009) method using various tuning parameter values:
-```{r wangzhousl, message=FALSE, warning=FALSE, cache=TRUE}
-sl4 <- SuperLearner(
-  Y=dat$totalcost, 
-  X=dat[,c("female","sofa","race","trt")],
-  SL.library=allWangZhou  
+```{r rfsl, message=FALSE, warning=FALSE, cache=TRUE}
+rf.sl <- SuperLearner(
+  Y = statins$death, 
+  X = statins[,-ncol(statins)],
+  family = binomial(),
+  method="method.NNLS",
+  SL.library = allRf
   )
 
-sl4
+rf.sl
 ```
 
 
 ## Combining Super Learner with the `caret` package
 The `caret` package provides a uniform approach to tuning parameter selection for a number of algorithms (for a full list, see http://topepo.github.io/caret/modelList.html). This provides a way to include algorithms in the Super Learner that implicitly use cross-validation. For example, one candidate algorithm in the Super Learner might use a gradient boosted machine with fixed values for tuning parameters, while another candidate algorithm uses a gradient boosted machine with tuning parameters determined adaptively (e.g., through twenty-fold cross-validation). 
 
-The `SuperLearner` package provides an algorithm `SL.caret` to use caret to train an algorithm. The `healthcost` package provides a slight modification of this function `SL.caret1` that fixes an issue dealing with the output from models trained using `caret` when `verbose = TRUE`. The `healthcost` package further supplies several algorithms for using caret with regression trees (`SL.rpart.caret1`), random forests (`SL.rf.caret1`), and gradient boosted machines (`SL.gbm.caret1`). 
+The `SuperLearner` package provides an algorithm `SL.caret` to use caret to train an algorithm. I have written a slight modification to this function that fixes an issue when one trains a gradient boosted machine with `verbose=FALSE` (even with this option specified, `SL.caret` still outputs a TON of useless information). 
 
-As a brief demonstration, we illustrate the implementation of a Super Learner that uses three gradient boosted machine algorithms: `SL.gbm` uses fixed tuning parameters (`gbm.trees=10000` and `interaction.depth=2`); `SL.gbm.caret1` uses twenty-fold cross validation (the default) to select these tuning parameters from a grid of eight possible values; `SL.gbm.caret2` uses ten-fold cross validation to select tuning parameters also from a grid of eight possible values. First we must define `SL.gbm.caret2`:
+```{r caret1, message=FALSE, warning=FALSE}
+SL.caret1 <- function (Y, X, newX, family, obsWeights, method = "rf", tuneLength = 3, 
+                       trControl = trainControl(method = "cv", number = 20, verboseIter = FALSE), 
+                       metric,...) 
+{
+  if (length(unique(Y))>2){
+    if(is.matrix(Y)) Y <- as.numeric(Y)
+    metric <- "RMSE"
+    if(method=="gbm"){
+      suppressWarnings(
+        # pass verbose==FALSE directly to train (verboseIter doesn't 
+        # suppress output)
+      fit.train <- caret::train(x = X, y = Y, weights = obsWeights, 
+                              metric = metric, method = method, 
+                              tuneLength = tuneLength, 
+                              trControl = trControl,verbose=FALSE)
+      )
+    }else{
+      suppressWarnings(
+      fit.train <- caret::train(x = X, y = Y, weights = obsWeights, 
+                                metric = metric, method = method, 
+                                tuneLength = tuneLength, 
+                                trControl = trControl)
+      )
+    }
+    pred <- predict(fit.train, newdata = newX, type = "raw")
+  }
+  if (length(unique(Y))<=2) {
+    metric <- "Accuracy"
+    Y.f <- as.factor(Y)
+    levels(Y.f) <- c("A0", "A1")
+    fit.train <- caret::train(x = X, y = Y.f, weights = obsWeights,
+                              metric = metric, method = method, 
+                              tuneLength = tuneLength, 
+                              trControl = trControl)
+    pred <- predict(fit.train, newdata = newX, type = "prob")[,2]
+  }
+  fit <- list(object = fit.train)
+  out <- list(pred = pred, fit = fit)
+  class(out$fit) <- c("SL.caret")
+  return(out)
+}
+```
+
+As a brief demonstration, we illustrate the implementation of a Super Learner that uses three gradient boosted machine algorithms: `SL.gbm` uses fixed tuning parameters (`gbm.trees=10000` and `interaction.depth=2`); `SL.gbm.caret1` uses twenty-fold cross validation (the default) to select these tuning parameters from a grid of eight possible values; `SL.gbm.caret2` uses ten-fold cross validation to select tuning parameters also from a grid of eight possible values. First we must define `SL.gbm.caret1` and `SL.gbm.caret2`:
 ```{r gbmcaret2, message=FALSE}
+SL.gbm.caret1 <- function(...,method="gbm",tuneLength=8){
+  SL.caret1(...,method=method,tuneLength=tuneLength)
+}
+
 SL.gbm.caret2 <- function(...,method="gbm",tuneLength=8, trControl=trainControl(method="cv",number=10,verboseIter=FALSE)){
   SL.caret1(...,method=method,tuneLength=tuneLength,trControl=trControl)
 }
 ```
 
 We can now implement the Super Learner. Note that the run time on this Super Learner will be considerably longer than previous runs due to the additional layers of cross validation.
-```{r sl5, message=FALSE, warnings=FALSE, cache=TRUE}
-# load caret and gbm package
-require(caret)
-require(gbm)
+```{r gbm.sl, message=FALSE, warnings=FALSE, cache=TRUE}
+set.seed(1234)
 
-set.seed(12345)
 # fit super learner using three GBMs
-sl5 <- SuperLearner(
-  Y=dat$totalcost, 
-  X=dat[,c("female","sofa","race","trt")],
-  SL.library=c("SL.gbm","SL.gbm.caret1","SL.gbm.caret2")  
-  )
+gbm.sl <- SuperLearner(
+  Y = statins$death, 
+  X = statins[,-ncol(statins)],
+  family = binomial(),
+  SL.library = c("SL.gbm","SL.gbm.caret1","SL.gbm.caret2")
+)
 
-sl5
+gbm.sl
 ```
-
-
-
