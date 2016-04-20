@@ -25,13 +25,13 @@ I have made three data sets available on GitHub that will be used in this demo. 
 
 ```{r install pacakages, message=FALSE}
 # prediction data set
-chspred <- getURL("https://raw.githubusercontent.com/benkeser/sllecture/master/chspred.csv")
+chspred <- read.csv(text = getURL("https://raw.githubusercontent.com/benkeser/sllecture/master/chspred.csv"), header = TRUE)
 
 # statin data
-statins <- getURL("https://raw.githubusercontent.com/benkeser/sllecture/master/statins.csv")
+statins <- read.csv(text = getURL("https://raw.githubusercontent.com/benkeser/sllecture/master/statins.csv"), header = TRUE)
 
 # hiv vaccine data
-hiv <- getURL("https://raw.githubusercontent.com/benkeser/sllecture/master/hiv.csv")
+hiv <- read.csv(text = getURL("https://raw.githubusercontent.com/benkeser/sllecture/master/hiv.csv"), header = TRUE)
 ```
 
 ## Super Learner with a simple library
